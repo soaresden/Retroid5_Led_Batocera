@@ -45,27 +45,12 @@ A comprehensive pygame-based LED controller for the Retroid Pocket 5 handheld co
 
 ### Prerequisites
 - Batocera OS on Retroid Pocket 5
-- Python 3
-- Pygame 2.5+
 
 ### Setup
 
 1. **Copy the script** to your Retroid Pocket 5:
 ```bash
 /userdata/roms/pygame/ledretroid/led_retroid.pygame
-```
-
-2. **Create the config directory**:
-```bash
-mkdir -p /userdata/system/configs
-```
-
-3. **Optional: Create initial battery config** (`/userdata/system/configs/leds.conf`):
-```
-20=FF0000
-30=FF7F00
-50=PULSE
-85=00FF00
 ```
 
 The service will auto-register on first launch.
@@ -150,18 +135,6 @@ Format: `battery_percentage=effect`
 ```
 
 **Color Interpolation**: If your battery is at 75%, it uses the highest effect ≤ 75% (in this example, 50=00FF00)
-
-## LED Hardware Layout
-
-### Physical Layout (Diamond Pattern)
-```
-        L1
-    L3      L2
-        
-    R3      R2
-        R1
-        R4
-```
 
 ### Hardware Paths
 - Left Joystick: `/sys/class/leds/l:r{1-4}/brightness` (Red, Green, Blue for L1-L4)
