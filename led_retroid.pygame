@@ -47,7 +47,7 @@ case "$1" in
         killall -9 batocera-led-handheld 2>/dev/null || true
         
         # Apply saved colors
-        python3 {SCRIPT_DIR}/led_controller.py --apply-leds-only &
+        python3 {SCRIPT_DIR}/led_retroid.pygame --apply-leds-only &
         
         echo "LED Controller: started"
         ;;
