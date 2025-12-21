@@ -118,11 +118,7 @@ BOTH (Master - affects all 8 LEDs)
 ```
 
 ## 🎯 Future Improvements
-- [ ] Preset color schemes
-- [ ] Animation support
-- [ ] Brightness profiles
-- [ ] Per-game LED settings
-- [ ] Web interface control
+- [ ] Fix the bug where you have to switch on and off in service after a reboot
 
 ## 👨‍💻 Credits
 Made with ❤️ by **Soaresden** for Retroid Pocket 5 enthusiasts
