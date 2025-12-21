@@ -48,11 +48,13 @@ A comprehensive pygame-based LED controller for the Retroid Pocket 5 handheld co
 
 ### Setup
 
-1. **Copy the script** to your Retroid Pocket 5:
+1. **Copy the pygame** to your Retroid Pocket 5 in :
 ```bash
 /userdata/roms/pygame/ledretroid/led_retroid.pygame
 ```
+2. Launch the game ! 
 
+3. Check the logs in /tmp
 The service will auto-register on first launch.
 
 ## Controls
