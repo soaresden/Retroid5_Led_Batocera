@@ -1,0 +1,723 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import pygame
+import sys
+import subprocess
+import time
+import logging
+import json
+import os
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/led_controller.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, 'colorsave.json')
+SERVICE_FILE = '/userdata/system/services/retroid5_led'
+SERVICE_NAME = 'retroid5_led'
+
+def setup_service():
+    """Create LED controller service if it doesn't exist"""
+    try:
+        if os.path.exists(SERVICE_FILE):
+            logger.info("✓ RP5 LED Service already installed")
+            return
+        
+        logger.info("Checking RP5 LED Service...")
+        logger.info("Not present, installing...")
+        
+        os.makedirs(os.path.dirname(SERVICE_FILE), exist_ok=True)
+        
+        service_content = f"""#!/bin/bash
+
+case "$1" in
+    start)
+        echo "LED Controller: starting..."
+        # Disable the batocera LED daemon by renaming it
+        if [ -f /usr/bin/batocera-led-handheld ]; then
+            mv /usr/bin/batocera-led-handheld /usr/bin/batocera-led-handheld.disabled 2>/dev/null || true
+        fi
+        killall -9 batocera-led-handheld 2>/dev/null || true
+        
+        # Apply saved colors
+        python3 {SCRIPT_DIR}/led_controller.py --apply-leds-only &
+        
+        echo "LED Controller: started"
+        ;;
+    stop)
+        echo "LED Controller: stopping..."
+        # Re-enable the batocera LED daemon
+        if [ -f /usr/bin/batocera-led-handheld.disabled ]; then
+            mv /usr/bin/batocera-led-handheld.disabled /usr/bin/batocera-led-handheld 2>/dev/null || true
+        fi
+        killall -9 python3 2>/dev/null || true
+        echo "LED Controller: stopped"
+        ;;
+    status)
+        if [ -f /usr/bin/batocera-led-handheld.disabled ]; then
+            echo "LED Controller: running (daemon disabled)"
+        else
+            echo "LED Controller: not running"
+        fi
+        ;;
+esac
+"""
+        
+        with open(SERVICE_FILE, 'w') as f:
+            f.write(service_content)
+        os.chmod(SERVICE_FILE, 0o755)
+        logger.info("✓ Service created")
+        
+        logger.info("Enabling service...")
+        subprocess.run(['batocera-services', 'enable', SERVICE_NAME], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info("✓ Service enabled")
+        
+        logger.info("Starting service...")
+        subprocess.run(['batocera-services', 'start', SERVICE_NAME], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info("✓ Service started")
+        logger.info("✓ RP5 LED Service installation complete!")
+    except Exception as e:
+        logger.error(f"Service setup failed: {e}")
+
+class LEDController:
+    def __init__(self):
+        logger.info("=== LED Controller Init ===")
+        
+        setup_service()
+        
+        pygame.init()
+        pygame.joystick.init()
+        
+        self.screen = pygame.display.set_mode((1920, 1080))
+        pygame.display.set_caption("Retroid LED Controller")
+        self.clock = pygame.time.Clock()
+        self.font_large = pygame.font.Font(None, 100)
+        self.font_small = pygame.font.Font(None, 70)
+        
+        self.joystick = None
+        if pygame.joystick.get_count() > 0:
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
+        
+        self.running = True
+        
+        self.color_names = ["Red", "RedOrange", "Orange", "OrangeYellow", "Yellow", "YellowGreen", "Lime", "Green", "GreenCyan", "CyanGreen", "Cyan", "Blue", "BluePurple", "Purple", "Magenta", "MagentaRed"]
+        self.colors = [
+            (255, 0, 0), (255, 64, 0), (255, 127, 0), (255, 191, 0),
+            (255, 255, 0), (191, 255, 0), (127, 255, 0), (0, 255, 0),
+            (0, 255, 127), (0, 255, 191), (0, 127, 255), (0, 0, 255),
+            (127, 0, 255), (191, 0, 255), (255, 0, 191), (255, 0, 64),
+        ]
+        
+        self.intensity_levels = [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 255]
+        
+        self.led_names = ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4", "LEFT", "RIGHT", "BOTH"]
+        self.intensity = [50] * 11
+        self.color = [0] * 11
+        self.disabled = [False] * 11
+        self.intensity_saved = [50] * 11
+        
+        self.selected = 10
+        self.last_input_time = 0
+        self.input_cooldown = 0.2
+        self.last_hat_state = (0, 0)
+        self.last_button_state = [False] * 10
+        
+        self.grid = {
+            8: (0, 0), 1: (1, 0), 10: (3, 0), 5: (5, 0), 9: (6, 0),
+            2: (0, 1), 0: (2, 1), 6: (4, 1), 4: (6, 1),
+            3: (1, 2), 7: (5, 2),
+        }
+        self.pos_to_led = {v: k for k, v in self.grid.items()}
+        
+        self.load_state()
+        self.apply_from_json()
+        logger.info("=== Initialization complete ===")
+    
+    def color_to_hex(self, color_idx):
+        """Convert color index to hex string"""
+        r, g, b = self.colors[color_idx]
+        return f"#{r:02X}{g:02X}{b:02X}"
+    
+    def hex_to_color(self, hex_str):
+        """Convert hex string to color index"""
+        hex_str = hex_str.lstrip('#').upper()
+        try:
+            r = int(hex_str[0:2], 16)
+            g = int(hex_str[2:4], 16)
+            b = int(hex_str[4:6], 16)
+            target = (r, g, b)
+            for i, color in enumerate(self.colors):
+                if color == target:
+                    return i
+            return 0
+        except:
+            return 0
+    
+    def load_state(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    
+                    if 'Left Joystick' in data:
+                        self._load_new_format(data)
+                    else:
+                        self.intensity = data.get('intensity', [50] * 11)
+                        self.color = data.get('color', [0] * 11)
+                        self.disabled = data.get('disabled', [False] * 11)
+                        self.intensity_saved = data.get('intensity_saved', [50] * 11)
+            except Exception as e:
+                logger.error(f"Load failed: {e}")
+        else:
+            self.save_state()
+    
+    def _load_new_format(self, data):
+        """Load from new readable format"""
+        led_map = {
+            'L1_Right': 0, 'L2_Up': 1, 'L3_Left': 2, 'L4_Down': 3,
+            'R1_Right': 4, 'R2_Up': 5, 'R3_Left': 6, 'R4_Down': 7,
+        }
+        
+        for joystick_name in ['Left Joystick', 'Right Joystick']:
+            if joystick_name not in data:
+                continue
+            
+            joystick_data = data[joystick_name]
+            for led_name, led_config in joystick_data.items():
+                if led_name in led_map:
+                    idx = led_map[led_name]
+                    self.disabled[idx] = not led_config.get('enabled', True)
+                    self.intensity[idx] = led_config.get('brightness', 50)
+                    self.intensity_saved[idx] = self.intensity[idx]
+                    self.color[idx] = self.hex_to_color(led_config.get('color', '#FF0000'))
+        
+        if 'Controls' in data:
+            controls = data['Controls']
+            control_map = {'LEFT': 8, 'RIGHT': 9, 'BOTH': 10}
+            for control_name, idx in control_map.items():
+                if control_name in controls:
+                    cfg = controls[control_name]
+                    self.intensity[idx] = cfg.get('brightness', 50)
+                    self.color[idx] = self.hex_to_color(cfg.get('color', '#FF0000'))
+    
+    def save_state(self):
+        try:
+            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+            
+            config = {
+                'Left Joystick': {
+                    'L1_Right': {
+                        'enabled': not self.disabled[0],
+                        'color': self.color_to_hex(self.color[0]),
+                        'brightness': self.intensity[0]
+                    },
+                    'L2_Up': {
+                        'enabled': not self.disabled[1],
+                        'color': self.color_to_hex(self.color[1]),
+                        'brightness': self.intensity[1]
+                    },
+                    'L3_Left': {
+                        'enabled': not self.disabled[2],
+                        'color': self.color_to_hex(self.color[2]),
+                        'brightness': self.intensity[2]
+                    },
+                    'L4_Down': {
+                        'enabled': not self.disabled[3],
+                        'color': self.color_to_hex(self.color[3]),
+                        'brightness': self.intensity[3]
+                    },
+                },
+                'Right Joystick': {
+                    'R1_Right': {
+                        'enabled': not self.disabled[4],
+                        'color': self.color_to_hex(self.color[4]),
+                        'brightness': self.intensity[4]
+                    },
+                    'R2_Up': {
+                        'enabled': not self.disabled[5],
+                        'color': self.color_to_hex(self.color[5]),
+                        'brightness': self.intensity[5]
+                    },
+                    'R3_Left': {
+                        'enabled': not self.disabled[6],
+                        'color': self.color_to_hex(self.color[6]),
+                        'brightness': self.intensity[6]
+                    },
+                    'R4_Down': {
+                        'enabled': not self.disabled[7],
+                        'color': self.color_to_hex(self.color[7]),
+                        'brightness': self.intensity[7]
+                    },
+                },
+                'Controls': {
+                    'LEFT': {
+                        'color': self.color_to_hex(self.color[8]),
+                        'brightness': self.intensity[8]
+                    },
+                    'RIGHT': {
+                        'color': self.color_to_hex(self.color[9]),
+                        'brightness': self.intensity[9]
+                    },
+                    'BOTH': {
+                        'color': self.color_to_hex(self.color[10]),
+                        'brightness': self.intensity[10]
+                    },
+                },
+            }
+            
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            logger.error(f"Save failed: {e}")
+    
+    def apply_from_json(self):
+        """Load config from JSON and apply LEDs immediately"""
+        try:
+            if not os.path.exists(CONFIG_FILE):
+                logger.warning(f"Config file not found: {CONFIG_FILE}")
+                return
+            
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+            
+            logger.info(f"✓ Loaded JSON from {CONFIG_FILE}")
+            
+            # Load intensity and colors for visual display
+            temp_intensity = [50] * 11
+            temp_color = [0] * 11
+            temp_disabled = [False] * 11
+            
+            led_map = {
+                'L1_Right': 0, 'L2_Up': 1, 'L3_Left': 2, 'L4_Down': 3,
+                'R1_Right': 4, 'R2_Up': 5, 'R3_Left': 6, 'R4_Down': 7,
+            }
+            
+            # Load Left Joystick
+            if 'Left Joystick' in data:
+                for led_name, led_config in data['Left Joystick'].items():
+                    if led_name in led_map:
+                        idx = led_map[led_name]
+                        temp_disabled[idx] = not led_config.get('enabled', True)
+                        temp_intensity[idx] = led_config.get('brightness', 50)
+                        temp_color[idx] = self.hex_to_color(led_config.get('color', '#FF0000'))
+                        
+                        enabled_str = "enabled" if not temp_disabled[idx] else "DISABLED"
+                        logger.info(f"  {led_name}: {enabled_str}; {led_config.get('color', '#FF0000')}; {temp_intensity[idx]}")
+            
+            # Load Right Joystick
+            if 'Right Joystick' in data:
+                for led_name, led_config in data['Right Joystick'].items():
+                    if led_name in led_map:
+                        idx = led_map[led_name]
+                        temp_disabled[idx] = not led_config.get('enabled', True)
+                        temp_intensity[idx] = led_config.get('brightness', 50)
+                        temp_color[idx] = self.hex_to_color(led_config.get('color', '#FF0000'))
+                        
+                        enabled_str = "enabled" if not temp_disabled[idx] else "DISABLED"
+                        logger.info(f"  {led_name}: {enabled_str}; {led_config.get('color', '#FF0000')}; {temp_intensity[idx]}")
+            
+            # Load Controls
+            if 'Controls' in data:
+                controls = data['Controls']
+                if 'LEFT' in controls:
+                    temp_intensity[8] = controls['LEFT'].get('brightness', 50)
+                    temp_color[8] = self.hex_to_color(controls['LEFT'].get('color', '#FF0000'))
+                    logger.info(f"  LEFT: {controls['LEFT'].get('color', '#FF0000')}; {temp_intensity[8]}")
+                if 'RIGHT' in controls:
+                    temp_intensity[9] = controls['RIGHT'].get('brightness', 50)
+                    temp_color[9] = self.hex_to_color(controls['RIGHT'].get('color', '#FF0000'))
+                    logger.info(f"  RIGHT: {controls['RIGHT'].get('color', '#FF0000')}; {temp_intensity[9]}")
+                if 'BOTH' in controls:
+                    temp_intensity[10] = controls['BOTH'].get('brightness', 50)
+                    temp_color[10] = self.hex_to_color(controls['BOTH'].get('color', '#FF0000'))
+                    logger.info(f"  BOTH: {controls['BOTH'].get('color', '#FF0000')}; {temp_intensity[10]}")
+            
+            logger.info("Applying to hardware...")
+            # Apply to hardware
+            cmd = []
+            for i in range(8):
+                r, g, b = 0, 0, 0
+                parent_idx = 8 if i < 4 else 9
+                
+                if temp_intensity[10] > 0:
+                    cr, cg, cb = self.colors[temp_color[10]]
+                    factor = temp_intensity[10] / 255.0
+                    r = int(cr * factor)
+                    g = int(cg * factor)
+                    b = int(cb * factor)
+                elif temp_intensity[parent_idx] > 0:
+                    cr, cg, cb = self.colors[temp_color[parent_idx]]
+                    factor = temp_intensity[parent_idx] / 255.0
+                    r = int(cr * factor)
+                    g = int(cg * factor)
+                    b = int(cb * factor)
+                elif temp_intensity[i] > 0:
+                    cr, cg, cb = self.colors[temp_color[i]]
+                    factor = temp_intensity[i] / 255.0
+                    r = int(cr * factor)
+                    g = int(cg * factor)
+                    b = int(cb * factor)
+                
+                if i < 4:
+                    n = i + 1
+                    cmd.append(f'echo {r} > /sys/class/leds/l:r{n}/brightness')
+                    cmd.append(f'echo {g} > /sys/class/leds/l:g{n}/brightness')
+                    cmd.append(f'echo {b} > /sys/class/leds/l:b{n}/brightness')
+                    logger.info(f"  L{n}: RGB({r},{g},{b})")
+                else:
+                    n = i - 3
+                    cmd.append(f'echo {r} > /sys/class/leds/r:r{n}/brightness')
+                    cmd.append(f'echo {g} > /sys/class/leds/r:g{n}/brightness')
+                    cmd.append(f'echo {b} > /sys/class/leds/r:b{n}/brightness')
+                    logger.info(f"  R{n}: RGB({r},{g},{b})")
+            
+            if cmd:
+                subprocess.run(['bash', '-c', '; '.join(cmd)], timeout=1, capture_output=True)
+                logger.info("✓ LEDs applied")
+        except Exception as e:
+            logger.error(f"apply_from_json failed: {e}")
+    
+    def log_state(self):
+        active = []
+        for i in range(11):
+            if self.disabled[i]:
+                active.append(f"{self.led_names[i]}-#")
+            elif self.intensity[i] > 0:
+                active.append(f"{self.led_names[i]}-{self.intensity[i]}-{self.color_names[self.color[i]]}")
+        logger.info(f"State: {' | '.join(active) if active else 'All OFF'}")
+    
+    def navigate(self, direction):
+        col, row = self.grid[self.selected]
+        if direction == 'up':
+            for r in range(row - 1, -1, -1):
+                if (col, r) in self.pos_to_led:
+                    self.selected = self.pos_to_led[(col, r)]
+                    break
+        elif direction == 'down':
+            for r in range(row + 1, 3):
+                if (col, r) in self.pos_to_led:
+                    self.selected = self.pos_to_led[(col, r)]
+                    break
+        elif direction == 'left':
+            for c in range(col - 1, -1, -1):
+                if (c, row) in self.pos_to_led:
+                    self.selected = self.pos_to_led[(c, row)]
+                    break
+        elif direction == 'right':
+            for c in range(col + 1, 7):
+                if (c, row) in self.pos_to_led:
+                    self.selected = self.pos_to_led[(c, row)]
+                    break
+    
+    def change_intensity(self, delta):
+        if self.disabled[self.selected]:
+            logger.info(f"[A] {self.led_names[self.selected]} is DISABLED - ignoring")
+            return
+        
+        idx = self.intensity_levels.index(self.intensity[self.selected])
+        new_idx = (idx + delta) % len(self.intensity_levels)
+        new_val = self.intensity_levels[new_idx]
+        old_val = self.intensity[self.selected]
+        
+        logger.info(f"[A] {self.led_names[self.selected]}: {old_val} -> {new_val}")
+        
+        self.intensity[self.selected] = new_val
+        self.intensity_saved[self.selected] = new_val
+        
+        children = []
+        if self.selected == 10:
+            children = list(range(8))
+        elif self.selected == 8:
+            children = [0, 1, 2, 3]
+        elif self.selected == 9:
+            children = [4, 5, 6, 7]
+        
+        for child in children:
+            if not self.disabled[child]:
+                self.intensity[child] = new_val
+                self.intensity_saved[child] = new_val
+        
+        if children:
+            logger.info(f"    -> propagated to {len(children)} children")
+        
+        logger.info(f"+{new_val - old_val} intensity; Saving value")
+        self.save_state()
+        self.apply_from_json()
+        self.log_state()
+    
+    def change_color(self, delta):
+        if self.disabled[self.selected]:
+            logger.info(f"[L/R] {self.led_names[self.selected]} is DISABLED - ignoring")
+            return
+        
+        old_color_idx = self.color[self.selected]
+        old_color_hex = self.color_to_hex(old_color_idx)
+        new_color = (self.color[self.selected] + delta) % 16
+        new_color_hex = self.color_to_hex(new_color)
+        
+        logger.info(f"[L/R] {self.led_names[self.selected]}: {self.color_names[self.color[self.selected]]} -> {self.color_names[new_color]}")
+        
+        self.color[self.selected] = new_color
+        
+        if self.intensity[self.selected] == 0:
+            self.intensity[self.selected] = 1
+            self.intensity_saved[self.selected] = 1
+        
+        children = []
+        if self.selected == 10:
+            children = list(range(8))
+        elif self.selected == 8:
+            children = [0, 1, 2, 3]
+        elif self.selected == 9:
+            children = [4, 5, 6, 7]
+        
+        for child in children:
+            if not self.disabled[child]:
+                self.color[child] = new_color
+                if self.intensity[child] == 0:
+                    self.intensity[child] = 1
+                    self.intensity_saved[child] = 1
+        
+        if children:
+            logger.info(f"    -> propagated to {len(children)} children")
+        
+        logger.info(f"From {old_color_hex} to {new_color_hex}; Saving value")
+        self.save_state()
+        self.apply_from_json()
+        self.log_state()
+    
+    def toggle_disabled(self):
+        led_name = self.led_names[self.selected]
+        enabled_str = "enabled" if self.disabled[self.selected] else "disabled"
+        new_enabled_str = "disabled" if self.disabled[self.selected] else "enabled"
+        
+        logger.info(f"[B] Toggle {led_name}")
+        logger.info(f"    From {enabled_str} to {new_enabled_str}; Saving value")
+        
+        self.disabled[self.selected] = not self.disabled[self.selected]
+        
+        if self.disabled[self.selected]:
+            self.intensity[self.selected] = 0
+        else:
+            self.intensity[self.selected] = self.intensity_saved[self.selected]
+        
+        self.save_state()
+        self.apply_from_json()
+        self.log_state()
+    
+    def handle_input(self):
+        try:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+            
+            if not self.joystick:
+                return
+            
+            current_time = time.time()
+            hat = self.joystick.get_hat(0)
+            
+            if hat != self.last_hat_state and current_time - self.last_input_time >= self.input_cooldown:
+                if hat[1] > 0:
+                    self.navigate('up')
+                elif hat[1] < 0:
+                    self.navigate('down')
+                if hat[0] < 0:
+                    self.navigate('left')
+                elif hat[0] > 0:
+                    self.navigate('right')
+                self.last_input_time = current_time
+            
+            self.last_hat_state = hat
+            
+            if self.joystick.get_button(5):
+                logger.info("Button L")
+                self.change_color(-1)
+                pygame.time.wait(100)
+            if self.joystick.get_button(6):
+                logger.info("Button R")
+                self.change_color(1)
+                pygame.time.wait(100)
+            
+            if self.joystick.get_button(2) and not self.last_button_state[2]:
+                logger.info("Button A")
+                self.change_intensity(1)
+                self.last_button_state[2] = True
+            elif not self.joystick.get_button(2):
+                self.last_button_state[2] = False
+            
+            if self.joystick.get_button(1) and not self.last_button_state[1]:
+                logger.info("Button B")
+                self.toggle_disabled()
+                self.last_button_state[1] = True
+            elif not self.joystick.get_button(1):
+                self.last_button_state[1] = False
+            
+            if self.joystick.get_button(9) and not self.last_button_state[9]:
+                logger.info("START - saving and exiting")
+                self.save_state()
+                self.running = False
+                self.last_button_state[9] = True
+            elif not self.joystick.get_button(9):
+                self.last_button_state[9] = False
+        except Exception as e:
+            logger.error(f"handle_input FAILED: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    def draw(self):
+        try:
+            self.screen.fill((15, 15, 25))
+            
+            button_w, button_h = 200, 150
+            start_x, start_y = 100, 150
+            
+            for led_idx, (col, row) in self.grid.items():
+                x = start_x + col * button_w
+                y = start_y + row * button_h
+                
+                is_sel = self.selected == led_idx
+                is_dis = self.disabled[led_idx]
+                intensity = self.intensity[led_idx]
+                
+                if is_dis:
+                    box_color = (0, 0, 0)
+                    fill_h = button_h
+                    border_color = (255, 0, 0)
+                    text_char = "✕"
+                    text_color = (255, 0, 0)
+                else:
+                    if intensity > 0:
+                        r, g, b = self.colors[self.color[led_idx]]
+                        f = intensity / 255.0
+                        box_color = (int(r * f), int(g * f), int(b * f))
+                    else:
+                        box_color = (30, 30, 30)
+                    
+                    fill_h = int(button_h * intensity / 255.0)
+                    border_color = (255, 255, 0) if is_sel else (255, 255, 255)
+                    text_char = self.led_names[led_idx]
+                    text_color = border_color
+                
+                pygame.draw.rect(self.screen, box_color, (x, y + button_h - fill_h, button_w, fill_h))
+                
+                border_w = 8 if is_sel else 4
+                pygame.draw.rect(self.screen, border_color, (x, y, button_w, button_h), border_w)
+                
+                text = self.font_large.render(text_char, True, text_color)
+                self.screen.blit(text, (x + button_w//2 - text.get_width()//2, y + 20))
+                
+                intensity_text = self.font_small.render(str(intensity), True, (100, 220, 100))
+                self.screen.blit(intensity_text, (x + button_w//2 - intensity_text.get_width()//2, y + 100))
+            
+            bar_y = 800
+            bar_h = 200
+            color_w = 1920 // 16
+            
+            for i in range(16):
+                x = i * color_w
+                r, g, b = self.colors[i]
+                pygame.draw.rect(self.screen, (r, g, b), (x, bar_y, color_w, bar_h))
+                if i == self.color[self.selected]:
+                    pygame.draw.rect(self.screen, (255, 255, 0), (x, bar_y, color_w, bar_h), 12)
+            
+            left_positions = [self.grid[i] for i in [0, 1, 2, 3]]
+            left_center_col = sum(p[0] for p in left_positions) / len(left_positions)
+            left_center_row = sum(p[1] for p in left_positions) / len(left_positions)
+            left_x = start_x + left_center_col * button_w + button_w//2
+            left_y = start_y + left_center_row * button_h + button_h//2
+            
+            left_colors = [self.colors[self.color[i]] for i in [0, 1, 2, 3] if not self.disabled[i] and self.intensity[i] > 0]
+            if left_colors:
+                left_r = sum(c[0] for c in left_colors) // len(left_colors)
+                left_g = sum(c[1] for c in left_colors) // len(left_colors)
+                left_b = sum(c[2] for c in left_colors) // len(left_colors)
+                left_color = (left_r, left_g, left_b)
+            else:
+                left_color = (50, 50, 50)
+            
+            right_positions = [self.grid[i] for i in [4, 5, 6, 7]]
+            right_center_col = sum(p[0] for p in right_positions) / len(right_positions)
+            right_center_row = sum(p[1] for p in right_positions) / len(right_positions)
+            right_x = start_x + right_center_col * button_w + button_w//2
+            right_y = start_y + right_center_row * button_h + button_h//2
+            
+            right_colors = [self.colors[self.color[i]] for i in [4, 5, 6, 7] if not self.disabled[i] and self.intensity[i] > 0]
+            if right_colors:
+                right_r = sum(c[0] for c in right_colors) // len(right_colors)
+                right_g = sum(c[1] for c in right_colors) // len(right_colors)
+                right_b = sum(c[2] for c in right_colors) // len(right_colors)
+                right_color = (right_r, right_g, right_b)
+            else:
+                right_color = (50, 50, 50)
+            
+            pygame.draw.circle(self.screen, left_color, (int(left_x), int(left_y)), 50)
+            pygame.draw.circle(self.screen, (255, 255, 255), (int(left_x), int(left_y)), 50, 4)
+            pygame.draw.circle(self.screen, right_color, (int(right_x), int(right_y)), 50)
+            pygame.draw.circle(self.screen, (255, 255, 255), (int(right_x), int(right_y)), 50, 4)
+            
+            pygame.display.flip()
+        except Exception as e:
+            logger.error(f"draw FAILED: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    def run(self):
+        logger.info("===== START =====")
+        while self.running:
+            try:
+                self.handle_input()
+                self.draw()
+                self.clock.tick(10)
+            except Exception as e:
+                logger.error(f"CRASH: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                break
+        
+        logger.info("===== EXIT =====")
+        pygame.quit()
+        sys.exit()
+
+def apply_leds_only():
+    """Load config and apply LEDs without UI"""
+    controller = LEDController.__new__(LEDController)
+    controller.colors = [
+        (255, 0, 0), (255, 64, 0), (255, 127, 0), (255, 191, 0),
+        (255, 255, 0), (191, 255, 0), (127, 255, 0), (0, 255, 0),
+        (0, 255, 127), (0, 255, 191), (0, 127, 255), (0, 0, 255),
+        (127, 0, 255), (191, 0, 255), (255, 0, 191), (255, 0, 64),
+    ]
+    controller.color_names = ["Red", "RedOrange", "Orange", "OrangeYellow", "Yellow", "YellowGreen", "Lime", "Green", "GreenCyan", "CyanGreen", "Cyan", "Blue", "BluePurple", "Purple", "Magenta", "MagentaRed"]
+    controller.intensity = [50] * 11
+    controller.color = [0] * 11
+    controller.disabled = [False] * 11
+    controller.intensity_saved = [50] * 11
+    
+    controller.load_state()
+    controller.apply_leds()
+    logger.info("LEDs applied from config")
+
+if __name__ == '__main__':
+    try:
+        if len(sys.argv) > 1 and sys.argv[1] == '--apply-leds-only':
+            apply_leds_only()
+        else:
+            app = LEDController()
+            app.run()
+    except Exception as e:
+        logger.error(f"Fatal: {e}")
+        sys.exit(1)
