@@ -291,10 +291,6 @@ MIT License - See LICENSE file
 Written for Batocera - @lbrpdx
 Enhanced LED configuration system for Retroid Pocket 5
 
-## Support
-
-Issues & feature requests: https://github.com/yourusername/Retroid5_Led_Batocera/issues
-
 ---
 
 **Last Updated**: 25 December 2025
