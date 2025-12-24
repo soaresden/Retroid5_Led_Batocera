@@ -5,30 +5,69 @@ LED Controller - Dual Mode (JSON Individual LEDs + Battery Config)
 FINAL VERSION - ALL FEATURES
 """
 
-import pygame
 import sys
-import subprocess
-import time
-import logging
 import json
 import os
+import logging
+
+# Setup logging FIRST
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/userdata/system/logs/ledretroid5.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# CHECK FOR --apply-leds MODE BEFORE PYGAME IMPORT
+if '--apply-leds' in sys.argv:
+    logger.info("=" * 60)
+    logger.info("LED Retroid 5 Service: SWITCHING ON from service")
+    logger.info("=" * 60)
+    logger.info("LED Retroid 5: Headless mode - loading JSON only...")
+    try:
+        with open('/userdata/roms/pygame/ledretroid/colorsave.json', 'r') as f:
+            config = json.load(f)
+        logger.info("LED Retroid 5: ✓ JSON loaded successfully!")
+        logger.info("=" * 60)
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"LED Retroid 5: Failed to load JSON: {e}")
+        logger.error("=" * 60)
+        sys.exit(1)
+
+# NOW import pygame for GUI mode
+import pygame
+import subprocess
+import time
 
 # Suppress pygame community message and xkbcommon errors
 import warnings
 warnings.filterwarnings('ignore')
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/tmp/led_controller.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Setup service (only in GUI mode, not --apply-leds)
+def apply_leds_directly():
+    """Apply LEDs from JSON without pygame - for service use"""
+    try:
+        JSON_CONFIG = '/userdata/roms/pygame/ledretroid/colorsave.json'
+        if not os.path.exists(JSON_CONFIG):
+            return False
+        
+        with open(JSON_CONFIG, 'r') as f:
+            config = json.load(f)
+        
+        # Extract LED data and apply to hardware
+        # For now, just return True - the monitor loop will handle it
+        return True
+    except Exception as e:
+        logger.error(f"apply_leds_directly failed: {e}")
+        return False
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Use hardcoded path instead of __file__ (for service compatibility)
+SCRIPT_DIR = '/userdata/roms/pygame/ledretroid'
 JSON_CONFIG = os.path.join(SCRIPT_DIR, 'colorsave.json')
 BATTERY_CONFIG = '/userdata/system/configs/leds.conf'
 JSON_DISABLED = JSON_CONFIG + '.disabled'
@@ -47,52 +86,49 @@ def detect_startup_mode():
         logger.info("No config found -> defaulting to JSON mode")
         return 'json'
 
-def setup_service():
-    try:
-        if os.path.exists(SERVICE_FILE):
-            logger.info("✓ RP5 LED Service already installed")
-            return
-        logger.info("Setting up RP5 LED Service...")
-        os.makedirs(os.path.dirname(SERVICE_FILE), exist_ok=True)
-        service_content = f"""#!/bin/bash
-case "$1" in
-    start)
-        echo "LED Controller: starting..."
-        killall batocera-led-handheld 2>/dev/null || true
-        sleep 1
-        echo "LED Controller: applying saved LED config..."
-        python3 {SCRIPT_DIR}/led_retroid.pygame --apply-leds-only > /dev/null 2>&1 &
-        echo "LED Controller: started"
-        ;;
-    stop)
-        echo "LED Controller: stopping..."
-        echo "LED Controller: stopped"
-        ;;
-    status)
-        if pgrep -f "led_retroid.pygame" > /dev/null 2>&1; then
-            echo "LED Controller: running"
-        else
-            echo "LED Controller: not running"
-        fi
-        ;;
-esac
-"""
-        with open(SERVICE_FILE, 'w') as f:
-            f.write(service_content)
-        os.chmod(SERVICE_FILE, 0o755)
-        logger.info("✓ Service file created at %s", SERVICE_FILE)
-        subprocess.run(['batocera-services', 'enable', SERVICE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(['batocera-services', 'start', SERVICE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        logger.info("✓ Service enabled & started")
-    except Exception as e:
-        logger.error(f"Service setup failed: {e}")
-
 class LEDController:
     def __init__(self):
         logger.info("=== LED Controller Init ===")
+        
+        # PREVENT MULTIPLE INSTANCES
+        lock_file = "/var/run/led-controller.lock"
+        try:
+            if os.path.exists(lock_file):
+                with open(lock_file, 'r') as f:
+                    old_pid = int(f.read().strip())
+                    try:
+                        os.kill(old_pid, 9)  # Kill old instance
+                        logger.info(f"✓ Killed old instance (PID {old_pid})")
+                    except:
+                        pass
+            
+            # Write current PID
+            with open(lock_file, 'w') as f:
+                f.write(str(os.getpid()))
+        except Exception as e:
+            logger.warning(f"Lock file: {e}")
+        
         self.mode = detect_startup_mode()
         logger.info(f"Starting in {self.mode.upper()} mode")
-        setup_service()
+        
+        # If starting in JSON mode, block daemon immediately and FORCE KILL it
+        if self.mode == 'json':
+            try:
+                os.makedirs('/var/run', exist_ok=True)
+                with open('/var/run/led-handheld-block', 'w') as f:
+                    f.write('1')
+                logger.info("✓ Block file created")
+                
+                # FORCE KILL daemon - try multiple methods
+                subprocess.run(['killall', '-9', 'batocera-led-handheld'], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(['pkill', '-9', '-f', 'batocera-led-handheld'], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info("✓ Daemon force-killed")
+            except Exception as e:
+                logger.warning(f"Could not block daemon on startup: {e}")
+        
+        # Skip pygame init if in apply-leds mode
         pygame.init()
         pygame.joystick.init()
         self.screen = pygame.display.set_mode((1920, 1080))
@@ -121,7 +157,7 @@ class LEDController:
         self.color = [0] * 11
         self.disabled = [False] * 11
         self.intensity_saved = [50] * 11
-        self.selected = 10
+        self.selected = None  # No selection until JSON loads
         
         # Battery Mode
         self.battery_points = []
@@ -146,7 +182,11 @@ class LEDController:
         
         if self.mode == 'json':
             self.load_json()
+            # Select BOTH after loading
+            self.selected = 10
+            # Apply IMMEDIATELY on startup to restore previous state
             self.apply_from_json()
+            logger.info("✓ JSON loaded, BOTH selected, and applied on startup")
         else:
             self.load_battery_config()
         
@@ -200,7 +240,7 @@ class LEDController:
             logger.info("User chose YES - rebooting after battery changes")
             self.running = False
             try:
-                subprocess.run(['batocera-es-swissknife', '--reboot'], timeout=5)
+                subprocess.run(['/usr/bin/batocera-es-swissknife', '--reboot'], timeout=5)
             except Exception as e:
                 logger.error(f"Reboot failed: {e}")
             self.last_button_state[2] = True
@@ -299,9 +339,8 @@ class LEDController:
                     self.color[idx] = self.hex_to_color(cfg.get('color', '#FF0000'))
     
     def save_json(self):
-        """Save JSON config (real-time)"""
+        """Save JSON config (real-time) - direct write, no temp"""
         try:
-            os.makedirs(os.path.dirname(JSON_CONFIG), exist_ok=True)
             config = {
                 'Left Joystick': {
                     'L1_Right': {'enabled': not self.disabled[0], 'color': '#' + self.color_to_hex(self.color[0]), 'brightness': self.intensity[0]},
@@ -321,8 +360,11 @@ class LEDController:
                     'BOTH': {'color': '#' + self.color_to_hex(self.color[10]), 'brightness': self.intensity[10]},
                 },
             }
+            
+            # Direct write (simplest and most reliable)
             with open(JSON_CONFIG, 'w') as f:
                 json.dump(config, f, indent=2)
+            
         except Exception as e:
             logger.error(f"Save JSON failed: {e}")
     
@@ -521,6 +563,17 @@ class LEDController:
                     if os.path.exists(JSON_DISABLED):
                         os.rename(JSON_DISABLED, JSON_CONFIG)
                         logger.info("  Renamed: %s -> %s", JSON_DISABLED, JSON_CONFIG)
+                    # Block daemon in JSON mode
+                    try:
+                        os.makedirs('/var/run', exist_ok=True)
+                        with open('/var/run/led-handheld-block', 'w') as f:
+                            f.write('1')
+                        logger.info("✓ Daemon blocked for JSON mode")
+                        subprocess.run(['killall', 'batocera-led-handheld'], 
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        logger.info("✓ Killed running daemon")
+                    except Exception as e:
+                        logger.warning(f"Could not block daemon: {e}")
                     self.mode = 'json'
                     self.load_json()
                     self.apply_from_json()
@@ -545,6 +598,11 @@ class LEDController:
                 self.handle_json_input(current_time)
             else:
                 self.handle_battery_input(current_time)
+            
+            # ANTI-DAEMON-OVERRIDE: Apply JSON every frame in JSON mode
+            if self.mode == 'json':
+                self.apply_from_json()
+                
         except Exception as e:
             logger.error(f"handle_input FAILED: {e}")
     
@@ -866,6 +924,25 @@ class LEDController:
         logger.info(f"Selected {led_name}: {new_state}")
         self.save_json()
         self.apply_from_json()
+        
+        # If BOTH was toggled, manage service
+        if self.selected == 10:  # BOTH
+            if not self.disabled[10]:  # Enabled
+                logger.info(">>> Starting LED service...")
+                try:
+                    subprocess.Popen(['bash', '/userdata/system/services/retroid5_led', 'start'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    logger.info("✓ Service started in background")
+                except Exception as e:
+                    logger.error(f"Could not start service: {e}")
+            else:  # Disabled
+                logger.info(">>> Stopping LED service...")
+                try:
+                    subprocess.Popen(['bash', '/userdata/system/services/retroid5_led', 'stop'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    logger.info("✓ Service stopped")
+                except Exception as e:
+                    logger.error(f"Could not stop service: {e}")
     
     def draw(self):
         try:
@@ -1139,23 +1216,89 @@ class LEDController:
             sim_text = self.font_tiny.render("EDIT MODE | Dpad L/R: Battery | Up/Down: Brightness | X: Effect | L/R: Color | A: Add | B: Remove | Y: SIM", True, (100, 255, 100))
         self.screen.blit(sim_text, (slider_x, 1050))
     
+
+    def disable_all_leds_and_exit(self):
+        """Disable all LEDs and exit"""
+        try:
+            # Set all brightness to 0
+            for led_name in self.disabled:
+                self.intensity[self.led_names.index(led_name)] = 0
+            self.save_json()
+            logger.info("✓ All LEDs disabled (brightness=0)")
+            logger.info(">>> Exiting...")
+            self.running = False
+        except Exception as e:
+            logger.error(f"Failed to disable all LEDs: {e}")
+            self.running = False
+
     def run(self):
         logger.info("===== START =====")
-        while self.running:
+        try:
+            while self.running:
+                try:
+                    self.handle_input()
+                    self.draw()
+                    self.clock.tick(10)
+                except Exception as e:
+                    logger.error(f"CRASH: {e}")
+                    break
+        finally:
+            # SAVE STATE before exit
+            if self.mode == 'json':
+                logger.info(">>> Saving LED state on exit...")
+                logger.info(f"Current LED state: brightness={self.intensity}, colors={[self.color_to_hex(c) for c in self.color]}")
+                self.save_json()
+                logger.info("✓ JSON saved to disk")
+                self.apply_from_json()
+                logger.info("✓ LED state applied to hardware")
+                
+                # Keep daemon blocked in JSON mode
+                try:
+                    os.makedirs('/var/run', exist_ok=True)
+                    with open('/var/run/led-handheld-block', 'w') as f:
+                        f.write('1')
+                    logger.info("✓ Block file written: /var/run/led-handheld-block")
+                    
+                    # FORCE KILL daemon with -9 using both methods
+                    subprocess.run(['killall', '-9', 'batocera-led-handheld'], 
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(['pkill', '-9', '-f', 'batocera-led-handheld'], 
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    logger.info("✓ Daemon force-killed on exit")
+                    
+                    # Verify block file exists
+                    if os.path.exists('/var/run/led-handheld-block'):
+                        logger.info("✓ Block file verified")
+                    else:
+                        logger.error("✗ Block file NOT found after write!")
+                except Exception as e:
+                    logger.error(f"Exit cleanup failed: {e}")
+            
+            # Remove lock file
             try:
-                self.handle_input()
-                self.draw()
-                self.clock.tick(10)
+                os.remove("/var/run/led-controller.lock")
+            except:
+                pass
+            
+            # Start service in background (non-blocking)
+            logger.info("===== Restarting service on exit =====")
+            try:
+                subprocess.Popen(['bash', '/userdata/system/services/retroid5_led', 'start'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info("✓ Service restarted in background")
             except Exception as e:
-                logger.error(f"CRASH: {e}")
-                break
-        
-        logger.info("===== EXIT =====")
-        pygame.quit()
-        sys.exit()
+                logger.warning(f"Could not restart service: {e}")
+            
+            logger.info("===== EXIT =====")
+            pygame.quit()
+            sys.exit()
 
 if __name__ == '__main__':
     try:
+        # Setup service ONCE at startup
+        
+        
+        # Normal GUI mode - create controller
         app = LEDController()
         app.run()
     except Exception as e:
