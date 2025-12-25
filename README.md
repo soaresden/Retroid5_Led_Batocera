@@ -35,7 +35,7 @@ LED Retroid 5 Controller lets you customize the LED lights on your Retroid Pocke
 3 files to copy:
 ├── ledretroid_JSON.pygame          (Individual LED control app)
 ├── ledretroid_Battery.pygame       (Battery-based LED app)  
-└── ledretroid_JSON_Apply.py        (Auto-apply on boot)
+└── ledretroid_JSON_Apply.pygame        (Auto-apply on boot)
 ```
 
 ### Installation 🚀
@@ -147,7 +147,7 @@ LED Retroid 5 Controller vous permet de personnaliser les LEDs de votre Retroid 
 3 fichiers à copier:
 ├── ledretroid_JSON.pygame          (Contrôle individuel des LEDs)
 ├── ledretroid_Battery.pygame       (LEDs basées sur la batterie)  
-└── ledretroid_JSON_Apply.py        (Auto-apply au démarrage)
+└── ledretroid_JSON_Apply.pygame        (Auto-apply au démarrage)
 ```
 
 ### Installation 🚀
