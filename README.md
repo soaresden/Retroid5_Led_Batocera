@@ -1,4 +1,6 @@
 # LED Retroid 5 Controller 🎮💡
+<img width="1920" height="1080" alt="screenshotJson" src="https://github.com/user-attachments/assets/e9b2fb05-ee10-4595-8d6a-1b528e427762" />
+<img width="1920" height="1080" alt="screenshotConf" src="https://github.com/user-attachments/assets/cdfa4945-5e0b-43ea-963e-789695b91c49" />
 
 Simple and elegant LED control system for Retroid Pocket handheld devices.
 
