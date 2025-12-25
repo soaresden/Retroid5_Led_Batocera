@@ -1,0 +1,746 @@
+#!/usr/bin/env python3
+import pygame, json, os, logging, subprocess, sys, time, hashlib, shutil, math
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s',
+    handlers=[logging.FileHandler('/userdata/system/logs/ledretroid5.log'), logging.StreamHandler()])
+logger = logging.getLogger(__name__)
+
+BATTERY_CONFIG = '/userdata/system/configs/leds.conf'
+BATTERY_CONFIG_TEMP = BATTERY_CONFIG + '.temp'
+
+COLORS = [(255,0,0), (255,64,0), (255,127,0), (255,191,0), (255,255,0), (191,255,0), (127,255,0), 
+          (0,255,0), (0,255,127), (0,255,191), (0,127,255), (0,0,255), (127,0,255), (191,0,255), (255,0,191), (255,0,64)]
+COLOR_NAMES = ["Red", "RedOrange", "Orange", "OrangeYellow", "Yellow", "YellowGreen", "Lime", "Green", 
+               "GreenCyan", "CyanGreen", "Cyan", "Blue", "BluePurple", "Purple", "Magenta", "MagentaRed"]
+
+MODES = ["Color", "PULSE", "RAINBOW", "OFF"]
+
+class BatteryController:
+    def __init__(self):
+        logger.info("=== LED Battery Controller ===")
+        
+        # Init pygame first (needed for popup)
+        pygame.init()
+        pygame.joystick.init()
+        
+        self.screen = pygame.display.set_mode((1920, 1080))
+        pygame.display.set_caption("LED Battery Config")
+        self.clock = pygame.time.Clock()
+        self.font_large = pygame.font.Font(None, 64)
+        self.font_normal = pygame.font.Font(None, 48)
+        self.font_small = pygame.font.Font(None, 36)
+        
+        self.joystick = pygame.joystick.Joystick(0) if pygame.joystick.get_count() > 0 else None
+        if self.joystick: self.joystick.init()
+        
+        # Check and confirm custom.sh deletion
+        if not self._confirm_delete_custom_script():
+            logger.info("===== User aborted custom.sh deletion - Exiting =====")
+            pygame.quit()
+            sys.exit(0)
+        
+        # Disable custom.sh for Battery mode
+        
+        # Launch daemon (LED applicator service) for Battery mode
+        logger.info(">>> Launching LED daemon for Battery mode...")
+        try:
+            subprocess.Popen(['/usr/bin/python3', '/userdata/roms/pygame/ledretroid/ledretroid_JSON_Apply.pygame'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.info("✓ LED daemon launched in background")
+        except Exception as e:
+            logger.warning(f"Could not launch LED daemon: {e}")
+        
+        self.battery_points = {}
+        self.battery_modes = {}
+        self.battery_original_colors = {}
+        self.battery_slider = 50
+        self.selected_color_idx = 0
+        self.selected_mode_idx = 0
+        self.running = True
+        self.last_button_state = {}
+        self.button_press_time = {}
+        self.last_slider_time = 0
+        self.slider_delay = 0.1
+        self.brightness = 255
+        self.long_press_threshold = 0.3
+        self.acceleration_delay = 0.05
+        self.anim_time = 0
+        self.first_dpad_input = False  # Déclenche apply au premier input D-Pad
+        
+        self.original_config_hash = None
+        self.show_exit_dialog = False
+        self.dialog_show_time = 0
+        
+        self.load_battery_config()
+        self.save_battery_config_temp()
+        self.original_config_hash = self.get_config_hash()
+        logger.info("===== START =====")
+    
+    
+    def _confirm_delete_custom_script(self):
+        """Show popup to confirm deletion of custom.sh"""
+        custom_sh = '/userdata/system/custom.sh'
+        
+        # If file doesn't exist, just return True (nothing to confirm)
+        if not os.path.exists(custom_sh):
+            logger.info("[BATTERY] custom.sh not found - proceeding")
+            self._disable_custom_script()
+            return True
+        
+        # File exists - show popup
+        try:
+            with open(custom_sh, 'r') as f:
+                content = f.read()[:500]  # First 500 chars
+        except:
+            content = "[Could not read file]"
+        
+        logger.info(f"[BATTERY] Detected custom.sh - showing confirmation popup")
+        
+        # Popup loop
+        confirmed = False
+        user_choice = None
+        
+        while user_choice is None:
+            self.screen.fill((15, 15, 25))
+            
+            # Title
+            title = self.font_large.render("⚠ Detected custom.sh", True, (255, 200, 0))
+            self.screen.blit(title, (150, 100))
+            
+            # Warning text
+            warning = self.font_normal.render("It will be DELETED!", True, (255, 100, 100))
+            self.screen.blit(warning, (150, 200))
+            
+            # Current content label
+            content_label = self.font_small.render("Current Content:", True, (200, 200, 200))
+            self.screen.blit(content_label, (150, 300))
+            
+            # Content box
+            pygame.draw.rect(self.screen, (30, 30, 30), (150, 350, 1600, 350))
+            pygame.draw.rect(self.screen, (100, 100, 100), (150, 350, 1600, 350), 3)
+            
+            # Content text (wrapped)
+            lines = content.split('\n')[:10]  # First 10 lines
+            for i, line in enumerate(lines):
+                text = self.font_small.render(line[:80], True, (150, 150, 150))
+                self.screen.blit(text, (170, 370 + i*30))
+            
+            # Buttons
+            a_text = self.font_normal.render("A = Continue Deleting", True, (255, 100, 100))
+            b_text = self.font_normal.render("B = Quit (No Changes)", True, (100, 200, 100))
+            self.screen.blit(a_text, (200, 750))
+            self.screen.blit(b_text, (1000, 750))
+            
+            pygame.display.flip()
+            
+            # Handle input
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    user_choice = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        user_choice = False
+            
+            if self.joystick:
+                if self.joystick.get_button(2):  # A button
+                    user_choice = True
+                    confirmed = True
+                    logger.info("[BATTERY] User confirmed deletion")
+                elif self.joystick.get_button(1):  # B button
+                    user_choice = False
+                    logger.info("[BATTERY] User cancelled - no changes")
+            
+            self.clock.tick(30)
+        
+        if confirmed:
+            self._disable_custom_script()
+        
+        return confirmed
+    
+    def _disable_custom_script(self):
+        """Delete custom.sh for Battery mode"""
+        try:
+            custom_sh = '/userdata/system/custom.sh'
+            
+            if os.path.exists(custom_sh):
+                os.remove(custom_sh)
+                logger.info("✓ custom.sh deleted for Battery mode")
+            else:
+                logger.info("[BATTERY] custom.sh not found (already deleted or not installed)")
+        except Exception as e:
+            logger.warning(f"[BATTERY] Could not delete custom.sh: {e}")
+    
+    def _enable_custom_script(self):
+        """Create/recreate custom.sh for JSON mode (called when exiting Battery)"""
+        try:
+            custom_sh = '/userdata/system/custom.sh'
+            
+            # Script content
+            script_content = '''#!/bin/bash
+# Batocera custom.sh - LED Apply on Boot
+# Location: /userdata/system/custom.sh
+
+LOG_FILE="/userdata/system/logs/ledretroid5.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log "════════════════════════════════════════════════════════"
+log ">>> [CUSTOM.SH] Starting - Applying LEDs on boot"
+log "════════════════════════════════════════════════════════"
+
+# Run the LED applicator
+/usr/bin/python3 /userdata/roms/pygame/ledretroid/ledretroid_JSON_Apply.pygame
+
+exit 0
+'''
+            
+            # Write the script
+            with open(custom_sh, 'w') as f:
+                f.write(script_content)
+            
+            # Make it executable
+            os.chmod(custom_sh, 0o755)
+            logger.info("✓ custom.sh created and made executable")
+            
+        except Exception as e:
+            logger.warning(f"[BATTERY] Could not create custom.sh: {e}")
+    
+    def find_closest_color_idx(self, hex_color):
+        r, g, b = self.hex_to_rgb(hex_color)
+        min_dist = float('inf')
+        closest_idx = 0
+        for idx, color in enumerate(COLORS):
+            dist = (color[0]-r)**2 + (color[1]-g)**2 + (color[2]-b)**2
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = idx
+        return closest_idx
+    
+    def load_battery_config(self):
+        if os.path.exists(BATTERY_CONFIG):
+            try:
+                with open(BATTERY_CONFIG, 'r') as f:
+                    config_lines = f.readlines()
+                
+                logger.info(f"=== Config file content ===")
+                for line in config_lines:
+                    logger.info(f"{line.strip()}")
+                logger.info(f"=== End config ===")
+                
+                last_color = "FF0000"  # Default RED
+                last_color_battery = 0
+                
+                for line in config_lines:
+                    line = line.strip()
+                    if line and '=' in line and not line.startswith('#'):
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            battery = int(parts[0].strip())
+                            value = parts[1].strip().upper()
+                            
+                            if value in ["PULSE", "RAINBOW", "OFF"]:
+                                self.battery_modes[battery] = value
+                                # Use last known color for modes
+                                if last_color_battery != battery:
+                                    self.battery_points[battery] = last_color
+                                    self.battery_original_colors[battery] = COLORS[self.find_closest_color_idx(last_color)]
+                            elif len(value) == 6:
+                                self.battery_points[battery] = value
+                                last_color = value
+                                last_color_battery = battery
+                                if battery not in self.battery_modes:
+                                    self.battery_modes[battery] = "Color"
+                                closest_idx = self.find_closest_color_idx(value)
+                                self.battery_original_colors[battery] = COLORS[closest_idx]
+                
+                total_entries = len(self.battery_points) + len([b for b in self.battery_modes if b not in self.battery_points])
+                logger.info(f"Loaded {total_entries} entries from {BATTERY_CONFIG}")
+            except Exception as e:
+                logger.error(f"Load failed: {e}")
+    
+    def save_battery_config_temp(self):
+        try:
+            os.makedirs(os.path.dirname(BATTERY_CONFIG_TEMP), exist_ok=True)
+            with open(BATTERY_CONFIG_TEMP, 'w') as f:
+                all_batteries = set(self.battery_points.keys()) | set(self.battery_modes.keys())
+                for battery in sorted(all_batteries):
+                    if battery in self.battery_modes and self.battery_modes[battery] in ["PULSE", "RAINBOW", "OFF"]:
+                        f.write(f"{battery}={self.battery_modes[battery]}\n")
+                    elif battery in self.battery_points:
+                        f.write(f"{battery}={self.battery_points[battery]}\n")
+            logger.info("Saved to temp")
+        except Exception as e:
+            logger.error(f"Save temp failed: {e}")
+    
+    def commit_changes(self):
+        try:
+            shutil.copy(BATTERY_CONFIG_TEMP, BATTERY_CONFIG)
+            logger.info("âœ“ Changes saved to real config")
+        except Exception as e:
+            logger.error(f"Commit failed: {e}")
+    
+    def get_config_hash(self):
+        config_str = ''
+        all_batteries = set(self.battery_points.keys()) | set(self.battery_modes.keys())
+        for battery in sorted(all_batteries):
+            if battery in self.battery_modes and self.battery_modes[battery] in ["PULSE", "RAINBOW", "OFF"]:
+                config_str += f"{battery}={self.battery_modes[battery]}"
+            elif battery in self.battery_points:
+                config_str += f"{battery}={self.battery_points[battery]}"
+        return hashlib.md5(config_str.encode()).hexdigest()
+    
+    def has_changes(self):
+        return self.get_config_hash() != self.original_config_hash
+    
+    def hex_to_rgb(self, hex_color):
+        try:
+            if len(hex_color) != 6:
+                return (0, 0, 0)
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            return (r, g, b)
+        except:
+            return (0, 0, 0)
+    
+    def rgb_to_hex(self, r, g, b):
+        return f"{int(r):02X}{int(g):02X}{int(b):02X}"
+    
+    def get_color_at_battery(self, battery_level):
+        if not self.battery_points:
+            return (0, 0, 0)
+        
+        sorted_points = sorted(self.battery_points.items())
+        for i in range(len(sorted_points) - 1, -1, -1):
+            if sorted_points[i][0] <= battery_level:
+                return self.hex_to_rgb(sorted_points[i][1])
+        
+        return self.hex_to_rgb(sorted_points[0][1])
+    
+    def get_mode_at_battery(self, battery_level):
+        if not self.battery_modes:
+            return "Color"
+        
+        sorted_modes = sorted(self.battery_modes.items())
+        for i in range(len(sorted_modes) - 1, -1, -1):
+            if sorted_modes[i][0] <= battery_level:
+                return sorted_modes[i][1]
+        
+        return sorted_modes[0][1]
+    
+    def get_original_color_for_battery(self, battery):
+        if battery in self.battery_original_colors:
+            return self.battery_original_colors[battery]
+        return (0, 0, 0)
+    
+    def get_display_color(self, battery, mode, time_val):
+        if battery not in self.battery_points:
+            return (0, 0, 0)
+        
+        r, g, b = self.get_original_color_for_battery(battery)
+        
+        if mode == "PULSE":
+            factor = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(time_val * 3))
+            r = int(r * factor)
+            g = int(g * factor)
+            b = int(b * factor)
+        elif mode == "RAINBOW":
+            hue = (time_val * 0.5) % 1.0
+            colors_rainbow = [(255,0,0), (255,127,0), (255,255,0), (0,255,0), (0,255,255), (0,0,255), (255,0,255)]
+            idx = int(hue * len(colors_rainbow))
+            r, g, b = colors_rainbow[idx % len(colors_rainbow)]
+        elif mode == "OFF":
+            r, g, b = 0, 0, 0
+        
+        return (r, g, b)
+    
+    def apply_color_to_hardware(self):
+        try:
+            sorted_points = sorted(self.battery_points.keys())
+            target_battery = sorted_points[0]
+            for batt in sorted_points:
+                if batt <= self.battery_slider:
+                    target_battery = batt
+                else:
+                    break
+            
+            mode = self.get_mode_at_battery(self.battery_slider)
+            display_r, display_g, display_b = self.get_display_color(target_battery, mode, self.anim_time)
+            
+            factor = self.brightness / 255.0
+            display_r = int(display_r * factor)
+            display_g = int(display_g * factor)
+            display_b = int(display_b * factor)
+            
+            for i in range(1, 5):
+                subprocess.run([f'echo {display_r} > /sys/class/leds/r:r{i}/brightness'], 
+                             shell=True, capture_output=True, timeout=0.5)
+                subprocess.run([f'echo {display_g} > /sys/class/leds/r:g{i}/brightness'], 
+                             shell=True, capture_output=True, timeout=0.5)
+                subprocess.run([f'echo {display_b} > /sys/class/leds/r:b{i}/brightness'], 
+                             shell=True, capture_output=True, timeout=0.5)
+        except:
+            pass
+    
+    def handle_input(self):
+        current_time = time.time()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.running = False
+        
+        if not self.joystick: 
+            return
+        
+        hat = self.joystick.get_hat(0)
+        
+        # Trigger apply on first D-Pad left/right input (after everything is loaded)
+        if not self.first_dpad_input and (hat[0] < 0 or hat[0] > 0):
+            logger.info(">>> First D-Pad input detected! Applying LEDs to override daemon...")
+            self.apply_color_to_hardware()
+            self.first_dpad_input = True
+        
+        if current_time - self.last_slider_time > self.slider_delay:
+            if hat[0] < 0: 
+                self.battery_slider = max(0, self.battery_slider - 5)
+                self.apply_color_to_hardware()
+                self.last_slider_time = current_time
+            elif hat[0] > 0: 
+                self.battery_slider = min(100, self.battery_slider + 5)
+                self.apply_color_to_hardware()
+                self.last_slider_time = current_time
+        
+        if self.joystick.get_button(4):
+            if 4 not in self.button_press_time:
+                self.button_press_time[4] = current_time
+            
+            press_duration = current_time - self.button_press_time[4]
+            if press_duration >= self.long_press_threshold:
+                if press_duration - self.long_press_threshold >= self.acceleration_delay:
+                    self.brightness = max(0, self.brightness - 5)
+                    self.apply_color_to_hardware()
+                    self.button_press_time[4] += self.acceleration_delay
+            else:
+                if not self.last_button_state.get('y'):
+                    self.brightness = max(0, self.brightness - 5)
+                    self.apply_color_to_hardware()
+                    self.last_button_state['y'] = True
+        else:
+            if 4 in self.button_press_time:
+                del self.button_press_time[4]
+            self.last_button_state['y'] = False
+        
+        if self.joystick.get_button(2):
+            if 2 not in self.button_press_time:
+                self.button_press_time[2] = current_time
+            
+            press_duration = current_time - self.button_press_time[2]
+            if press_duration >= self.long_press_threshold:
+                if press_duration - self.long_press_threshold >= self.acceleration_delay:
+                    self.brightness = min(255, self.brightness + 5)
+                    self.apply_color_to_hardware()
+                    self.button_press_time[2] += self.acceleration_delay
+            else:
+                if not self.last_button_state.get('a'):
+                    self.brightness = min(255, self.brightness + 5)
+                    self.apply_color_to_hardware()
+                    self.last_button_state['a'] = True
+        else:
+            if 2 in self.button_press_time:
+                del self.button_press_time[2]
+            self.last_button_state['a'] = False
+        
+        if self.joystick.get_button(1) and not self.last_button_state.get('b'):
+            r, g, b = COLORS[self.selected_color_idx]
+            factor = self.brightness / 255.0
+            r_dimmed = int(r * factor)
+            g_dimmed = int(g * factor)
+            b_dimmed = int(b * factor)
+            
+            hex_color = self.rgb_to_hex(r_dimmed, g_dimmed, b_dimmed)
+            
+            self.battery_points[self.battery_slider] = hex_color
+            self.battery_modes[self.battery_slider] = MODES[self.selected_mode_idx]
+            self.battery_original_colors[self.battery_slider] = COLORS[self.selected_color_idx]
+            self.save_battery_config_temp()
+            
+            bright_pct = int(self.brightness * 100 / 255)
+            logger.info(f"âœ“ ADDED point {self.battery_slider}% = {hex_color} ({COLOR_NAMES[self.selected_color_idx]} @ {bright_pct}%) Mode: {MODES[self.selected_mode_idx]}")
+            self.apply_color_to_hardware()
+            self.last_button_state['b'] = True
+        elif not self.joystick.get_button(1):
+            self.last_button_state['b'] = False
+        
+        if self.joystick.get_button(3) and not self.last_button_state.get('x'):
+            if self.battery_points and len(self.battery_points) > 2:
+                closest = min(self.battery_points.keys(), key=lambda x: abs(x - self.battery_slider))
+                removed_color = self.battery_points[closest]
+                removed_mode = self.battery_modes.get(closest, "Color")
+                del self.battery_points[closest]
+                if closest in self.battery_modes:
+                    del self.battery_modes[closest]
+                if closest in self.battery_original_colors:
+                    del self.battery_original_colors[closest]
+                self.save_battery_config_temp()
+                self.apply_color_to_hardware()
+                logger.info(f"âœ“ REMOVED point {closest}% = {removed_color} Mode: {removed_mode}")
+            self.last_button_state['x'] = True
+        elif not self.joystick.get_button(3):
+            self.last_button_state['x'] = False
+        
+        if self.joystick.get_button(5) and not self.last_button_state.get('l'):
+            self.selected_color_idx = (self.selected_color_idx - 1) % 16
+            self.last_button_state['l'] = True
+        elif not self.joystick.get_button(5):
+            self.last_button_state['l'] = False
+        
+        if self.joystick.get_button(6) and not self.last_button_state.get('r'):
+            self.selected_color_idx = (self.selected_color_idx + 1) % 16
+            r, g, b = COLORS[self.selected_color_idx]
+            factor = self.brightness / 255.0
+            r = int(r * factor)
+            g = int(g * factor)
+            b = int(b * factor)
+            
+            for i in range(1, 5):
+                subprocess.run([f'echo {r} > /sys/class/leds/r:r{i}/brightness'], 
+                             shell=True, capture_output=True, timeout=0.5)
+                subprocess.run([f'echo {g} > /sys/class/leds/r:g{i}/brightness'], 
+                             shell=True, capture_output=True, timeout=0.5)
+                subprocess.run([f'echo {b} > /sys/class/leds/r:b{i}/brightness'], 
+                             shell=True, capture_output=True, timeout=0.5)
+            
+            self.last_button_state['r'] = True
+        elif not self.joystick.get_button(6):
+            self.last_button_state['r'] = False
+        
+        if self.joystick.get_button(7) and not self.last_button_state.get('select'):
+            self.selected_mode_idx = (self.selected_mode_idx + 1) % len(MODES)
+            logger.info(f"âœ“ Mode Selected: {MODES[self.selected_mode_idx]}")
+            self.last_button_state['select'] = True
+        elif not self.joystick.get_button(7):
+            self.last_button_state['select'] = False
+        
+        if not self.show_exit_dialog:
+            if self.joystick.get_button(8) and not self.last_button_state.get('start'):
+                self.show_exit_dialog = True
+                self.dialog_show_time = current_time
+                self.last_button_state['start'] = True
+            elif not self.joystick.get_button(8):
+                self.last_button_state['start'] = False
+        else:
+            if self.joystick.get_button(8) and not self.last_button_state.get('start') and (current_time - self.dialog_show_time) >= 1.0:
+                logger.info("SAVE & EXIT")
+                self.commit_changes()
+                self.running = False
+                self.last_button_state['start'] = True
+            elif not self.joystick.get_button(8):
+                self.last_button_state['start'] = False
+        
+        if self.show_exit_dialog and (current_time - self.dialog_show_time) >= 1.0:
+            if self.joystick.get_button(2) and not self.last_button_state.get('dialog_a'):
+                logger.info("SAVE & REBOOT")
+                self.commit_changes()
+                subprocess.run(['/usr/bin/batocera-es-swissknife', '--reboot'], timeout=2)
+                self.last_button_state['dialog_a'] = True
+            elif not self.joystick.get_button(2):
+                self.last_button_state['dialog_a'] = False
+            
+            if self.joystick.get_button(1) and not self.last_button_state.get('dialog_b'):
+                logger.info("QUIT WITHOUT SAVE")
+                self.running = False
+                self.last_button_state['dialog_b'] = True
+            elif not self.joystick.get_button(1):
+                self.last_button_state['dialog_b'] = False
+    
+    def draw(self):
+        self.screen.fill((15, 15, 25))
+        self.anim_time += self.clock.get_time() / 1000.0
+        
+        title = self.font_large.render("Battery LED Config", True, (0, 255, 100))
+        self.screen.blit(title, (50, 30))
+        
+        if self.show_exit_dialog:
+            overlay = pygame.Surface((1920, 1080))
+            overlay.set_alpha(200)
+            overlay.fill((0, 0, 0))
+            self.screen.blit(overlay, (0, 0))
+            
+            if self.has_changes():
+                dialog_text = self.font_large.render("Changes Found!", True, (255, 255, 0))
+            else:
+                dialog_text = self.font_large.render("Exit?", True, (200, 200, 200))
+            self.screen.blit(dialog_text, (600, 350))
+            
+            yes_text = self.font_normal.render("A = SAVE & REBOOT", True, (0, 255, 0))
+            no_text = self.font_normal.render("B = QUIT (NO SAVE)", True, (255, 0, 0))
+            start_text = self.font_normal.render("START = SAVE & EXIT", True, (0, 200, 255))
+            
+            self.screen.blit(yes_text, (250, 550))
+            self.screen.blit(no_text, (800, 550))
+            self.screen.blit(start_text, (1200, 550))
+        else:
+            frise_y, frise_x, frise_w = 150, 100, 1700
+            frise_h = 80
+            
+            sorted_points = sorted(self.battery_points.items())
+            if sorted_points:
+                # Draw each pixel of the frise
+                for x_pos in range(int(frise_w)):
+                    pct = (x_pos / frise_w) * 100
+                    
+                    # Find which battery point to use (mode + color)
+                    current_battery = sorted_points[0][0]
+                    for batt, color in sorted_points:
+                        if pct >= batt:
+                            current_battery = batt
+                        else:
+                            break
+                    
+                    # Mode comes from closest battery level
+                    mode = self.get_mode_at_battery(pct)
+                    # Color comes from closest color point
+                    color_battery = current_battery
+                    r, g, b = self.get_display_color(color_battery, mode, self.anim_time)
+                    
+                    # Draw rectangle for each pixel (1 pixel width) to ensure full coverage
+                    pygame.draw.rect(self.screen, (r, g, b), 
+                                   (frise_x + x_pos, frise_y, 1, frise_h))
+            
+            pygame.draw.rect(self.screen, (255, 255, 255), (frise_x, frise_y, frise_w, frise_h), 3)
+            
+            for battery in sorted(self.battery_points.keys()):
+                x = frise_x + (battery / 100.0) * frise_w
+                mode = self.battery_modes.get(battery, "Color")
+                
+                r, g, b = self.get_display_color(battery, mode, self.anim_time)
+                
+                pygame.draw.circle(self.screen, (0, 0, 0), (int(x), frise_y + frise_h // 2), 14)
+                pygame.draw.circle(self.screen, (r, g, b), (int(x), frise_y + frise_h // 2), 12)
+            
+            cursor_x = frise_x + (self.battery_slider / 100.0) * frise_w
+            pygame.draw.circle(self.screen, (255, 255, 0), (int(cursor_x), frise_y + frise_h // 2 + 30), 15)
+            pygame.draw.circle(self.screen, (255, 255, 255), (int(cursor_x), frise_y + frise_h // 2 + 30), 15, 3)
+            
+            batt_text = self.font_normal.render(f"{self.battery_slider}%", True, (255, 255, 255))
+            self.screen.blit(batt_text, (cursor_x - 30, frise_y - 50))
+            
+            points_y = 300
+            points_title = self.font_normal.render("Battery Points:", True, (200, 200, 200))
+            self.screen.blit(points_title, (100, points_y))
+            
+            all_batteries = set(self.battery_points.keys()) | set(self.battery_modes.keys())
+            for idx, battery in enumerate(sorted(all_batteries)):
+                if battery in self.battery_points:
+                    hex_color = self.battery_points[battery]
+                    mode = self.battery_modes.get(battery, "Color")
+                    r, g, b = self.get_original_color_for_battery(battery)
+                    color_text = f"{battery}% = {hex_color} [{mode}]"
+                else:
+                    mode = self.battery_modes[battery]
+                    color_text = f"{battery}% = {mode}"
+                    r, g, b = (100, 100, 100)
+                
+                text_color = (255, 255, 0) if battery == self.battery_slider else (200, 200, 200)
+                text = self.font_small.render(color_text, True, text_color)
+                self.screen.blit(text, (120, points_y + 60 + idx * 50))
+                
+                if battery in self.battery_points:
+                    pygame.draw.rect(self.screen, (r, g, b), (600, points_y + 50 + idx * 50, 50, 30))
+                    pygame.draw.rect(self.screen, (255, 255, 255), (600, points_y + 50 + idx * 50, 50, 30), 2)
+            
+            color_y = 750
+            slider_color = self.get_color_at_battery(self.battery_slider)
+            slider_mode = self.get_mode_at_battery(self.battery_slider)
+            color_text = self.font_normal.render(f"At {self.battery_slider}%: {slider_mode}", True, (200, 200, 200))
+            self.screen.blit(color_text, (100, color_y))
+            
+            # Get animated color if RAINBOW/PULSE mode
+            target_battery = sorted(self.battery_points.keys())[0] if self.battery_points else 0
+            for batt in sorted(self.battery_points.keys()):
+                if batt <= self.battery_slider:
+                    target_battery = batt
+            
+            # Get display color (with animation for RAINBOW/PULSE)
+            display_color = self.get_display_color(target_battery, slider_mode, self.anim_time)
+            r, g, b = display_color if display_color != (0, 0, 0) else slider_color
+            
+            factor = self.brightness / 255.0
+            r_display = int(r * factor)
+            g_display = int(g * factor)
+            b_display = int(b * factor)
+            
+            hex_display = self.rgb_to_hex(r_display, g_display, b_display)
+            hex_text = self.font_small.render(f"Preview: {hex_display}", True, (100, 200, 255))
+            self.screen.blit(hex_text, (100, color_y + 50))
+            
+            pygame.draw.rect(self.screen, (r_display, g_display, b_display), (400, color_y + 40, 120, 100))
+            pygame.draw.rect(self.screen, (255, 255, 255), (400, color_y + 40, 120, 100), 3)
+            
+            bright_pct = int(self.brightness * 100 / 255)
+            bright_text = self.font_large.render(f"{bright_pct}%", True, (0, 255, 255))
+            self.screen.blit(bright_text, (1750, 750))
+            
+            bright_label = self.font_normal.render("Brightness", True, (0, 255, 255))
+            self.screen.blit(bright_label, (1700, 700))
+            
+            bright_bar_w = 100
+            bright_bar_h = 300
+            bright_bar_x = 1800
+            bright_bar_y = 450
+            pygame.draw.rect(self.screen, (50, 50, 50), (bright_bar_x, bright_bar_y, bright_bar_w, bright_bar_h))
+            filled_h = int(bright_bar_h * (self.brightness / 255.0))
+            pygame.draw.rect(self.screen, (0, 255, 255), (bright_bar_x, bright_bar_y + bright_bar_h - filled_h, bright_bar_w, filled_h))
+            pygame.draw.rect(self.screen, (0, 255, 255), (bright_bar_x, bright_bar_y, bright_bar_w, bright_bar_h), 2)
+            
+            frise_bottom_y = 900
+            frise_bottom_text = self.font_normal.render("Color Selector:", True, (200, 200, 200))
+            self.screen.blit(frise_bottom_text, (100, frise_bottom_y - 50))
+            
+            color_w = frise_w / 16
+            for i in range(16):
+                r, g, b = COLORS[i]
+                visual_factor = (self.brightness / 255.0) * 0.75 + 0.25
+                r_visual = int(r * visual_factor)
+                g_visual = int(g * visual_factor)
+                b_visual = int(b * visual_factor)
+                
+                x = frise_x + i * color_w
+                pygame.draw.rect(self.screen, (r_visual, g_visual, b_visual), (x, frise_bottom_y, color_w, frise_h))
+                
+                if i == self.selected_color_idx:
+                    pygame.draw.rect(self.screen, (255, 255, 0), (x, frise_bottom_y, color_w, frise_h), 5)
+            
+            pygame.draw.rect(self.screen, (255, 255, 255), (frise_x, frise_bottom_y, frise_w, frise_h), 3)
+            
+            mode_text = self.font_normal.render(f"Mode: {MODES[self.selected_mode_idx]}", True, (0, 255, 200))
+            self.screen.blit(mode_text, (1400, 300))
+            
+            info = "L/R: Color | Y: Bright- | A: Bright+ | B: Add | X: Remove | SELECT: Mode | START: Exit"
+            info_text = self.font_small.render(info, True, (100, 200, 100))
+            self.screen.blit(info_text, (50, 1030))
+        
+        # Apply animation to hardware if current mode is animated (RAINBOW or PULSE)
+        slider_mode = self.get_mode_at_battery(self.battery_slider)
+        if slider_mode in ["RAINBOW", "PULSE"]:
+            self.apply_color_to_hardware()
+        
+        pygame.display.flip()
+    
+    def run(self):
+        while self.running:
+            self.handle_input()
+            self.draw()
+            self.clock.tick(60)
+        
+        logger.info("===== EXIT =====")
+        pygame.quit()
+        sys.exit()
+
+if __name__ == '__main__':
+    app = BatteryController()
+    app.run()
