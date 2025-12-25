@@ -1,297 +1,271 @@
-# Retroid Pocket 5 LED Controller
+# LED Retroid 5 Controller 🎮💡
 
-Advanced LED configuration system for Retroid Pocket 5 handheld devices running Batocera. Display battery levels and achievements through customizable RGB LED effects.
-
-## Features
-
-- 🔋 **Battery-Aware LED Control** - Dynamic LED colors based on current battery percentage
-- 🎨 **Multiple Effect Modes** - Color, PULSE, RAINBOW, and OFF modes
-- 🔅 **Brightness Control** - Adjustable brightness from 0-100%
-- 🎮 **Interactive UI** - Intuitive gamepad controls for configuration
-- 💾 **Persistent Configuration** - Save and load LED settings from `/userdata/system/configs/leds.conf`
-- ⚙️ **JSON Mode Support** - Alternative JSON-based configuration system
-- 🔄 **Headless Service** - Background daemon for automatic LED management
-- 🌈 **Achievement Integration** - Special LED effects when unlocking RetroAchievements
-
-## Architecture
-
-### Three-App System
-
-1. **ledretroid_Battery.py** - Interactive Battery Mode UI
-   - Full-featured configuration editor
-   - Real-time LED preview
-   - Gamepad-based controls
-   - Visual battery level simulator
-
-2. **ledretroid_JSON.py** - JSON Mode UI
-   - Alternative configuration format
-   - JSON file-based settings
-
-3. **ledretroid_Battery_Apply.py** - Headless Service
-   - Runs in background
-   - Reads config and applies LED colors
-   - No UI, pure daemon functionality
-
-## Configuration File
-
-Edit `/userdata/system/configs/leds.conf`:
-
-```
-5=PULSE
-10=FF0000
-15=FF4000
-30=050300
-50=000500
-100=RAINBOW
-```
-
-### Format: `battery_level=value`
-
-**battery_level**: 0-100 (percentage)
-
-**value**: Either
-- **Hex Color**: `RRGGBB` (e.g., `FF0000` for red)
-- **Effect Mode**: `PULSE`, `RAINBOW`, `OFF`
-
-### Behavior
-
-- Colors/modes apply to all battery levels >= their threshold
-- Zone 0% to first point inherits first point's mode + closest color
-- When battery reaches 100% (charging), special effects trigger
-- `PULSE`: Breathing effect with dimming
-- `RAINBOW`: Cycling through color spectrum
-- `OFF`: LEDs turn off
-
-## Installation
-
-1. Clone repository:
-```bash
-git clone https://github.com/yourusername/Retroid5_Led_Batocera
-cd Retroid5_Led_Batocera
-```
-
-2. Copy files to Batocera:
-```bash
-# Battery Mode (Interactive)
-cp ledretroid_Battery.py /userdata/roms/pygame/ledretroid/
-
-# Service (Auto-start)
-cp ledretroid_Battery_Apply.py /userdata/system/services/
-```
-
-3. Create config directory:
-```bash
-mkdir -p /userdata/system/configs
-```
-
-4. Create initial config:
-```bash
-cat > /userdata/system/configs/leds.conf << 'EOF'
-0=PULSE
-5=FF0000
-10=CC3333
-15=FF7F00
-100=009900
-EOF
-```
-
-## Usage
-
-### Interactive Mode
-
-Launch from Batocera menu:
-```
-Pygame > ledretroid_Battery
-```
-
-### Controls
-
-| Button | Action |
-|--------|--------|
-| **D-Pad Left/Right** | Move battery slider (±5%) |
-| **L/R Bumpers** | Cycle color selector (16 colors) |
-| **Y** | Decrease brightness (hold: accelerate) |
-| **A** | Increase brightness (hold: accelerate) |
-| **B** | Add point at slider with selected color/mode |
-| **X** | Remove closest point to slider |
-| **SELECT** | Cycle effect mode (Color → PULSE → RAINBOW → OFF) |
-| **START** | Exit menu dialog |
-
-### UI Layout
-
-**Top Section:**
-- Battery level indicator (0-100%)
-- Main LED effect preview bar (animated)
-- Point markers with current mode effects
-
-**Middle Section:**
-- Brightness slider & percentage
-- Preview color box
-- Battery points list with hex values
-
-**Bottom Section:**
-- Color selector palette (16 predefined colors)
-- Visual brightness range (25%-100% for visibility)
-
-## Headless Service
-
-Auto-apply LED colors in background without UI:
-
-```bash
-systemctl start led_retroid_5_battery
-systemctl enable led_retroid_5_battery
-```
-
-Logs to: `/userdata/system/logs/ledretroid5.log`
-
-## API / Manual Control
-
-Control LEDs from command line:
-
-```bash
-# Set solid color (RGB values 0-255)
-/usr/bin/batocera-led-handheld set_color_dec 255 0 0
-
-# Trigger rainbow effect
-/usr/bin/batocera-led-handheld rainbow
-
-# Pulse effect
-/usr/bin/batocera-led-handheld pulse
-
-# Turn off
-/usr/bin/batocera-led-handheld off
-
-# Get current color
-/usr/bin/batocera-led-handheld get_color
-
-# Set brightness (0-100)
-/usr/bin/batocera-led-handheld set_brightness 50
-```
-
-## RetroAchievement Integration
-
-Trigger LED effects when unlocking achievements:
-
-```bash
-mkdir -p /userdata/system/configs/emulationstation/scripts/achievements/
-echo "#!/bin/bash" > /userdata/system/configs/emulationstation/scripts/achievements/leds.sh
-echo "/usr/bin/batocera-led-handheld rainbow" >> /userdata/system/configs/emulationstation/scripts/achievements/leds.sh
-chmod +x /userdata/system/configs/emulationstation/scripts/achievements/leds.sh
-```
-
-## Color Reference
-
-### Predefined Colors (16)
-
-| Index | Name | Hex |
-|-------|------|-----|
-| 0 | Red | FF0000 |
-| 1 | Red-Orange | FF4000 |
-| 2 | Orange | FF7F00 |
-| 3 | Orange-Yellow | FFBF00 |
-| 4 | Yellow | FFFF00 |
-| 5 | Yellow-Green | BFFF00 |
-| 6 | Lime | 7FFF00 |
-| 7 | Green | 00FF00 |
-| 8 | Green-Cyan | 00FF7F |
-| 9 | Cyan-Green | 00FFBF |
-| 10 | Cyan | 00FFFF |
-| 11 | Blue | 0000FF |
-| 12 | Blue-Purple | 7F00FF |
-| 13 | Purple | BF00FF |
-| 14 | Magenta | FF00BF |
-| 15 | Magenta-Red | FF0040 |
-
-### Battery Color Examples
-
-```
-# Low battery = Red warning
-5=FF0000
-
-# Medium battery = Orange
-30=FF7F00
-
-# High battery = Green
-70=00FF00
-
-# Charging = Rainbow cycling
-100=RAINBOW
-```
-
-## Brightness & Display
-
-- **Actual Brightness**: 0-255 (0% = off, 100% = full)
-- **Visual Display**: 25%-100% minimum (for UI visibility)
-  - 0% actual → shows as 25% in UI
-  - 100% actual → shows as 100% in UI
-- **LED Hardware**: Always uses real brightness value
-
-## File Structure
-
-```
-Retroid5_Led_Batocera/
-├── ledretroid_Battery.py          # Interactive UI
-├── ledretroid_JSON.py             # JSON config mode
-├── ledretroid_Battery_Apply.py    # Headless service
-├── batoled.py                     # LED hardware interface
-└── README.md
-```
-
-## Requirements
-
-- Batocera Linux on Retroid Pocket 5
-- Python 3.7+
-- Pygame
-- `/sys/class/leds/` hardware access
-
-## Troubleshooting
-
-### LEDs not responding
-1. Check `/sys/class/leds/` exists:
-   ```bash
-   ls /sys/class/leds/
-   ```
-2. Verify permissions (should be writable as root)
-3. Check logs:
-   ```bash
-   tail -f /userdata/system/logs/ledretroid5.log
-   ```
-
-### Config not loading
-1. Verify file path: `/userdata/system/configs/leds.conf`
-2. Check syntax (battery% = value, one per line)
-3. Validate hex colors (6 characters, 0-F)
-
-### UI freezing
-1. Ensure joystick is detected
-2. Check for Python errors in logs
-3. Restart pygame service
-
-### Brightness not changing
-1. Verify brightness control is enabled in device tree
-2. Check `/sys/class/leds/` file permissions
-3. Test manual brightness:
-   ```bash
-   echo 128 > /sys/class/leds/r:r1/brightness
-   ```
-
-## Contributing
-
-Contributions welcome! Please submit:
-- Bug reports with logs
-- Feature requests with examples
-- Configuration examples for specific games/themes
-
-## License
-
-MIT License - See LICENSE file
-
-## Credits
-
-Written for Batocera - @lbrpdx
-Enhanced LED configuration system for Retroid Pocket 5
+Simple and elegant LED control system for Retroid Pocket handheld devices.
 
 ---
 
-**Last Updated**: 25 December 2025
-**Tested On**: Batocera on Retroid Pocket 5
+## 📖 English
+
+### What is it? 🤔
+
+LED Retroid 5 Controller lets you customize the LED lights on your Retroid Pocket device in two different ways:
+
+- **JSON Mode** 🎨 - Control individual LED colors for each button
+- **Battery Mode** 🔋 - Show battery level through LED colors automatically
+
+
+
+### How does it work? ⚙️
+
+**JSON Mode:**
+- You run the app and customize each LED's color and brightness
+- Your settings are saved in a JSON file
+- When you reboot, the colors stay exactly as you left them ✅
+
+**Battery Mode:**
+- The app reads your battery percentage
+- It automatically changes LED colors based on battery level
+- Low battery = red, Full battery = green, etc.
+
+### What you get 📦
+
+```
+3 files to copy:
+├── ledretroid_JSON.pygame          (Individual LED control app)
+├── ledretroid_Battery.pygame       (Battery-based LED app)  
+└── ledretroid_JSON_Apply.py        (Auto-apply on boot)
+```
+
+### Installation 🚀
+
+**Super easy:**
+
+1. Copy these 3 files into: `roms/pygame/ledretroid/`
+2. Done! ✨
+
+That's it. No configuration needed.
+
+### How to use 🎮
+
+**Starting JSON Mode (customize LEDs):**
+```
+Launch ledretroid_JSON.pygame
+↓
+Customize your LED colors and brightness
+↓
+Press START to exit
+↓
+Colors are saved and persist on reboot ✓
+```
+
+**Starting Battery Mode (auto colors):**
+```
+Launch ledretroid_Battery.pygame
+↓
+App automatically shows battery level with colors
+↓
+Colors change as battery drains
+```
+
+### Features ✨
+
+- 🎨 **16 colors** to choose from
+- 🔆 **Brightness control** for each LED
+- 💾 **Auto-save** - settings persist after reboot
+- ⚡ **Simple UI** - easy joystick navigation
+- 🔄 **Mode switching** - switch between JSON and Battery anytime
+- 📊 **Live preview** - see colors change in real-time
+
+### Controls 🕹️
+
+**In JSON Mode:**
+- `D-Pad` - Navigate LED selection
+- `L/R buttons` - Change color
+- `A button` - Increase brightness
+- `Y button` - Decrease brightness
+- `B button` - Toggle LED on/off
+- `START` - Exit and save
+
+**In Battery Mode:**
+- Just enjoy the automatic colors!
+- `START` to exit
+
+### What happens when you exit? 🔌
+
+**JSON Mode:**
+- Your custom colors are saved
+- They come back on next reboot ✓
+
+**Battery Mode:**
+- Battery config is saved
+- LEDs will show battery level next time
+- Custom.sh is removed (won't interfere with JSON)
+
+### Troubleshooting 🔧
+
+**LEDs not showing my colors?**
+- Make sure you saved before exiting (Press START)
+- Colors will appear on next reboot
+
+**Can't switch between modes?**
+- Exit the current mode completely (Press START)
+- Then launch the other mode
+- It will handle the switch automatically
+
+**Colors look dim?**
+- Increase brightness with A button
+- Brightness is saved too!
+
+---
+
+## 📖 Français
+
+### C'est quoi? 🤔
+
+LED Retroid 5 Controller vous permet de personnaliser les LEDs de votre Retroid Pocket de deux façons différentes:
+
+- **Mode JSON** 🎨 - Contrôlez chaque couleur de LED individuellement
+- **Mode Batterie** 🔋 - Affichage automatique du niveau de batterie par les LEDs
+
+### Comment ça marche? ⚙️
+
+**Mode JSON:**
+- Vous lancez l'app et personnalisez la couleur et luminosité de chaque LED
+- Vos paramètres sont sauvegardés dans un fichier JSON
+- Au redémarrage, les couleurs restent exactement comme vous les avez laissées ✅
+
+**Mode Batterie:**
+- L'app lit le pourcentage de batterie
+- Elle change automatiquement les couleurs des LEDs selon le niveau
+- Batterie faible = rouge, Batterie pleine = vert, etc.
+
+### Ce que vous obtenez 📦
+
+```
+3 fichiers à copier:
+├── ledretroid_JSON.pygame          (Contrôle individuel des LEDs)
+├── ledretroid_Battery.pygame       (LEDs basées sur la batterie)  
+└── ledretroid_JSON_Apply.py        (Auto-apply au démarrage)
+```
+
+### Installation 🚀
+
+**Super simple:**
+
+1. Copiez ces 3 fichiers dans: `roms/pygame/ledretroid/`
+2. C'est tout! ✨
+
+Zéro configuration nécessaire.
+
+### Comment utiliser 🎮
+
+**Démarrer le Mode JSON (personnaliser les LEDs):**
+```
+Lancez ledretroid_JSON.pygame
+↓
+Personnalisez vos couleurs et luminosité
+↓
+Appuyez sur START pour quitter
+↓
+Les couleurs sont sauvegardées et persistent au redémarrage ✓
+```
+
+**Démarrer le Mode Batterie (couleurs auto):**
+```
+Lancez ledretroid_Battery.pygame
+↓
+L'app affiche automatiquement le niveau de batterie avec les couleurs
+↓
+Les couleurs changent à mesure que la batterie se décharge
+```
+
+### Fonctionnalités ✨
+
+- 🎨 **16 couleurs** à choisir
+- 🔆 **Contrôle de luminosité** pour chaque LED
+- 💾 **Auto-save** - paramètres persistent après redémarrage
+- ⚡ **Interface simple** - navigation facile au joystick
+- 🔄 **Changement de mode** - basculez entre JSON et Batterie facilement
+- 📊 **Aperçu en direct** - voyez les couleurs changer en temps réel
+
+### Contrôles 🕹️
+
+**En Mode JSON:**
+- `D-Pad` - Sélectionner une LED
+- `Boutons L/R` - Changer de couleur
+- `Bouton A` - Augmenter la luminosité
+- `Bouton Y` - Diminuer la luminosité
+- `Bouton B` - Activer/Désactiver la LED
+- `START` - Quitter et sauvegarder
+
+**En Mode Batterie:**
+- Profitez simplement des couleurs automatiques!
+- `START` pour quitter
+
+### Que se passe-t-il quand vous quittez? 🔌
+
+**Mode JSON:**
+- Vos couleurs personnalisées sont sauvegardées
+- Elles réapparaissent au redémarrage ✓
+
+**Mode Batterie:**
+- La config batterie est sauvegardée
+- Les LEDs afficheront le niveau de batterie la prochaine fois
+- custom.sh est supprimé (n'interfère pas avec JSON)
+
+### Dépannage 🔧
+
+**Les LEDs ne montrent pas mes couleurs?**
+- Assurez-vous d'avoir sauvegardé avant de quitter (Appuyez sur START)
+- Les couleurs apparaîtront au prochain redémarrage
+
+**Je ne peux pas basculer entre les modes?**
+- Quittez complètement le mode actuel (Appuyez sur START)
+- Puis lancez l'autre mode
+- Il gérera automatiquement le changement
+
+**Les couleurs semblent ternes?**
+- Augmentez la luminosité avec le bouton A
+- La luminosité est aussi sauvegardée!
+
+---
+
+## 📁 File Structure / Structure des fichiers
+
+```
+roms/
+└── pygame/
+    └── ledretroid/
+        ├── ledretroid_JSON.pygame
+        ├── ledretroid_Battery.pygame
+        └── ledretroid_JSON_Apply.py
+```
+
+---
+
+## 🔄 Mode Switching / Changement de mode
+
+- **JSON → Battery:** Exit JSON (START), launch Battery
+- **Battery → JSON:** Exit Battery (START), launch JSON
+- **Automatic:** Custom.sh is created/deleted automatically
+
+---
+
+## 💡 Tips & Tricks
+
+- Change LED colors in real-time to test!
+- Use brightness to make colors pop
+- Toggle LEDs on/off if you don't need all of them
+- Battery mode is totally automatic - no tweaking needed
+
+---
+
+## 🎨 Colors Available / Couleurs disponibles
+
+Red • Orange • Yellow • Green • Cyan • Blue • Purple • Magenta ... and 8 more variations!
+
+---
+
+**Enjoy your custom LED setup!** 🎉
+
+Made for Retroid Pocket with ❤️
